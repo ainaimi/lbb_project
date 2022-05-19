@@ -1,0 +1,509 @@
+---
+title: "Live Birth Bias"
+author: "Sarah Thornburgh"
+date: "4/5/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(tidyverse)
+library(data.table)
+library(cmprsk)
+library(lubridate)
+library(survival)
+library(survminer)
+library(ggplot2)
+library(zoo)
+
+setwd("C:/Users/sthorn2/OneDrive - Emory University/PhD Program/projects/Live Birth Bias/code")
+
+eager_base_imputed <- read_csv("eager_base_imputed.csv")
+as.data.frame(eager_base_imputed)
+```
+
+Approach 1: subset data based on stillbirth (note: did not move forward with this analysis because of sparse data issues)
+
+```{r, eval=FALSE, include=FALSE, message=FALSE, warning=FALSE}
+table(eager_base_imputed$outcome)
+livebirth <- subset(eager_base_imputed, outcome == "live birth")
+table(livebirth$outcome)
+# 595 women in the subsetted data 
+
+# look at distribution of gestational age in the subset of women with live births 
+hist(livebirth$GA)
+
+#  preterm birth variable where 1 = less than 37 weeks gestation
+livebirth$preterm <- livebirth$GA
+livebirth$preterm[livebirth$preterm < 37] <- 1
+livebirth$preterm[livebirth$preterm >= 37] <- 0
+table(livebirth$preterm)
+# 53 preterm births when using a cutoff of 37 weeks 
+
+# step 2: 2x2 tables for preterm birth and smoking 
+
+table(livebirth$smoke, livebirth$preterm)
+# preterm, smoke = 7
+```
+
+Approach 2: Conditional CI Curves 
+
+```{r}
+# check pregnancy variables for those with outcome = withdrawal 
+setDT(eager_base_imputed)
+eager_base_imputed[, as.list(summary(GA)), by = outcome]
+```
+
+```{r, creation of three cohorts}
+# cohort 1 - conditioning on live birth outcome 
+livebirth <- subset(eager_base_imputed, outcome == "live birth")
+
+# create indicator variable 
+livebirth$event <- livebirth$outcome
+livebirth$event[livebirth$outcome == "live birth"] <- 1
+table(livebirth$event)
+# 595 with value of 1 for event 
+
+
+# cohort 2 <- all conceptions 
+conception <- subset(eager_base_imputed, outcome == "live birth" | outcome == "pregnancy loss")
+# 921 total observations
+
+# create indicator variable 
+conception$event <- conception$outcome
+conception$event[conception$outcome == "live birth"] <- 1
+conception$event[conception$outcome == "pregnancy loss"] <- 2
+# 595 with value of 1 for event, 189 with value of 2 for event
+
+# cohort 3 - all outcomes 
+alloutcomes <- subset(eager_base_imputed, outcome == "live birth" | outcome == "pregnancy loss" | outcome == "withdrawal" | outcome == "efuwp")
+
+# create indicator variable
+alloutcomes$event <- alloutcomes$outcome
+alloutcomes$event[alloutcomes$outcome == "live birth"] <- 1
+alloutcomes$event[alloutcomes$outcome == "pregnancy loss"] <- 2
+alloutcomes$event[alloutcomes$outcome == "withdrawal"] <- 3
+alloutcomes$event[alloutcomes$outcome == "efuwp"] <- 4
+```
+
+```{r, time to event variables}
+livebirth$randomization_date <- as.Date(livebirth$randomization_date, "%m/%d/%Y")
+livebirth$final_date <- as.Date(livebirth$final_date, "%m/%d/%Y")
+livebirth$timetoevent <- as.numeric(difftime(livebirth$final_date, livebirth$randomization_date, units = "days"))
+hist(livebirth$timetoevent)
+
+conception$randomization_date <- as.Date(conception$randomization_date, "%m/%d/%Y")
+conception$final_date <- as.Date(conception$final_date, "%m/%d/%Y")
+conception$timetoevent <- as.numeric(difftime(conception$final_date, conception$randomization_date, units = "days"))
+hist(conception$timetoevent)
+
+alloutcomes$randomization_date <- as.Date(alloutcomes$randomization_date, "%m/%d/%Y")
+alloutcomes$final_date <- as.Date(alloutcomes$final_date, "%m/%d/%Y")
+alloutcomes$timetoevent <- as.numeric(difftime(alloutcomes$final_date, alloutcomes$randomization_date, units = "days"))
+hist(alloutcomes$timetoevent)
+```
+
+```{r, cumulative incidence functions}
+print(zz <- cuminc(livebirth$timetoevent, livebirth$event, cencode = 2, na.action = na.omit)) 
+plot(zz, lty = 1, color = 1:2, xlab = "Days", main = "Livebirths")
+
+print(yy <- cuminc(conception$timetoevent, conception$event, cencode = 3, na.action = na.omit)) 
+plot(yy, lty = 1, color = 1:2, xlab = "Days", main = "All Conceptions")
+
+print(xx <- cuminc(alloutcomes$timetoevent, alloutcomes$event, cencode = 3, na.action = na.omit)) 
+plot(xx, lty = 1, color = 1:3, xlab = "Days", main = "All Outcomes")
+```
+
+```{r, curves stratified by smoking}
+
+# km curves for each cohort 
+# every outcome that is not live birth is censored for each cohort 
+# using the survival package, 0 = censored and 1 = had event 
+
+# live birth cohort 
+livebirth$status <- as.numeric(livebirth$event)
+#simple KM 
+livebirth_KM <- survfit(Surv(livebirth$timetoevent, livebirth$status) ~ 1, data = livebirth)
+ggsurvplot(livebirth_KM) + ggtitle("Kaplan Meier Livebirth Cohort") 
+ggsurvplot(livebirth_KM, fun = "event") + ggtitle("Cumulative Incidence Livebirth Cohort")
+#stratified by smoking
+livebirth_KM_smoke <- survfit(Surv(livebirth$timetoevent, livebirth$status) ~ livebirth$smoke, data = livebirth)
+ggsurvplot(livebirth_KM_smoke) + ggtitle("Survival Probability Livebirth Cohort, by Smoking Status") 
+# fun = event plots cumulative events 
+ggsurvplot(livebirth_KM_smoke, fun = "event") + ggtitle("Cumulative Events in Livebirth Cohort, by Smoking Status")
+# cuminc curves adjusted for smoking 
+print(aa <- cuminc(livebirth$timetoevent, livebirth$event, cencode = 3, group = livebirth$smoke, na.action = na.omit)) 
+plot(aa, lty = 1, color = 1:2, xlab = "Days", main = "Cumulative Incidence in Livebirth Cohort, by Smoking Status")
+
+
+table(livebirth$event)
+aa_prime <- cuminc(livebirth$timetoevent, 
+             livebirth$event, 
+             cencode = 2, 
+             group = livebirth$smoke, 
+             na.action = na.omit)
+
+# all conceptions cohort 
+conception$status <- as.numeric(conception$event)
+conception$status[conception$status == "2"] <- 0
+#simple KM 
+as.data.frame(conception)
+conception_KM <- survfit(Surv(conception$timetoevent, conception$status) ~ 1, data = conception)
+ggsurvplot(conception_KM) + ggtitle("Kaplan Meier All Conceptions Cohort") 
+ggsurvplot(conception_KM, fun = "event") + ggtitle("Cumulative Incidence All Conceptions Cohort")
+#stratified by smoking
+conception_KM_smoke <- survfit(Surv(conception$timetoevent, conception$status) ~ conception$smoke, data = conception)
+ggsurvplot(conception_KM_smoke) + ggtitle("Survival Probability All Conceptions Cohort, by Smoking Status") 
+# fun = event plots cumulative events 
+ggsurvplot(conception_KM_smoke, fun = "event") + ggtitle("Cumulative Events in All Conceptions Cohort, by Smoking Status")
+# cuminc curves adjusted for smoking 
+print(bb <- cuminc(conception$timetoevent, conception$event, cencode = 3, group = conception$smoke, na.action = na.omit)) 
+plot(bb, lty = 1, color = 1:4, xlab = "Days", main = "Cumulative Incidence in All Conceptions Cohort, by Smoking Status")
+
+# all outcomes cohort 
+alloutcomes$status <- as.numeric(alloutcomes$event)
+alloutcomes$status[alloutcomes$status == "2"] <- 0
+alloutcomes$status[alloutcomes$status == "3"] <- 0
+alloutcomes$status[alloutcomes$status == "4"] <- 0
+#simple KM 
+alloutcomes_KM <- survfit(Surv(alloutcomes$timetoevent, alloutcomes$status) ~ 1, data = alloutcomes)
+ggsurvplot(alloutcomes_KM) + ggtitle("Kaplan Meier All Outcomes Cohort") 
+ggsurvplot(alloutcomes_KM, fun = "event") + ggtitle("Cumulative Incidence All OUtcomes Cohort")
+#stratified by smoking
+alloutcomes_KM_smoke <- survfit(Surv(alloutcomes$timetoevent, alloutcomes$status) ~ alloutcomes$smoke, data = alloutcomes)
+ggsurvplot(alloutcomes_KM_smoke) + ggtitle("Survival Probability All Outcomes Cohort, by Smoking Status") 
+# fun = event plots cumulative events 
+ggsurvplot(alloutcomes_KM_smoke, fun = "event") + ggtitle("Cumulative Events in All Outcomes Cohort, by Smoking Status")
+# cuminc curves adjusted for smoking 
+print(cc <- cuminc(alloutcomes$timetoevent, alloutcomes$event, cencode = 3, group = alloutcomes$smoke, na.action = na.omit)) 
+plot(cc, lty = 1, color = 1:6, xlab = "Days", main = "Cumulative Incidence in All Outomces Cohort, by Smoking Status")
+```
+
+```{r, crude risk difference plots}
+# livebirth cohort (object = aa)
+livebirth_01 <- as.data.frame(cbind(aa$`0 1`$time, aa$`0 1`$est))
+names(livebirth_01) <- c('time', 'est_01')
+livebirth_01$tmp <- 1
+livebirth_01 <- livebirth_01 %>% group_by(time) %>% mutate(counter=cumsum(tmp)) %>% filter(counter==2)
+livebirth_01_zero <- as.numeric(data.frame("0", "0", "0", "0"))
+names(livebirth_01_zero) <- c("time", "est_01", "tmp", "counter")
+final_livebirth_01 <- as.data.frame(rbind(livebirth_01_zero, livebirth_01))
+
+livebirth_11 <- as.data.frame(cbind(aa$`1 1`$time, aa$`1 1`$est))
+names(livebirth_11) <- c('time', 'est_11')
+livebirth_11$tmp <- 1
+livebirth_11 <- livebirth_11 %>% group_by(time) %>% mutate(counter=cumsum(tmp)) %>% filter(counter==2)
+livebirth_11_zero <- as.numeric(data.frame("0", "0", "0", "0"))
+names(livebirth_11_zero) <- c("time", "est_11", "tmp", "counter")
+final_livebirth_11 <- as.data.frame(rbind(livebirth_11_zero, livebirth_11))
+
+livebirth_time <- as.data.frame(seq(0,600))
+names(livebirth_time) <- c('time')
+
+merged_livebirth_01 <- left_join(livebirth_time, final_livebirth_01)
+merged_livebirth <- left_join(merged_livebirth_01, final_livebirth_11, by = "time")
+
+final_livebirth <- na.locf(merged_livebirth, na.rm = FALSE)
+final_livebirth <- mutate(final_livebirth, diff = est_11 - est_01)
+
+# ggplot figure 
+ggplot(data = final_livebirth, aes(x = time)) +
+  geom_line(aes(y = diff, color = "diff")) +
+  labs(x = "Days of Follow-Up", y = "Risk Difference", color = "Legend", title = "Risk Differences Between Smokers and Non-Smokers") + 
+  scale_color_manual(name = "Outcome", values = c("diff" = "black"), labels = c("Livebirth")) +
+  theme_classic()
+
+ggplot(data = final_livebirth, aes(x = time)) +
+  geom_line(aes(y = diff, color = "diff")) +
+  geom_smooth(aes(x = time, y = diff, color = "diff"), method = "loess") +
+  labs(x = "Days of Follow-Up", y = "Risk Difference", color = "Legend", title = "Risk Differences Between Smokers and Non-Smokers") + 
+  scale_color_manual(name = "Outcome", values = c("diff" = "black"), labels = c("Livebirth")) +
+  theme_classic()
+
+ggplot(data = final_livebirth, aes(x = time)) +
+  geom_smooth(aes(x = time, y = diff, color = "diff"), method = "loess") +
+  labs(x = "Days of Follow-Up", y = "Risk Difference", color = "Legend", title = "Risk Differences Between Smokers and Non-Smokers") + 
+  scale_color_manual(name = "Outcome", values = c("diff" = "black"), labels = c("Livebirth")) +
+  theme_classic()
+
+# all conceptions cohort (object = bb)
+conception_01 <- as.data.frame(cbind(bb$`0 1`$time, bb$`0 1`$est))
+names(conception_01) <- c('time', 'est_01')
+conception_01$tmp <- 1
+conception_01 <- conception_01 %>% group_by(time) %>% mutate(counter=cumsum(tmp)) %>% filter(counter==2)
+conception_01_zero <- as.numeric(data.frame("0", "0", "0", "0"))
+names(conception_01_zero) <- c("time", "est_01", "tmp", "counter")
+final_conception_01 <- as.data.frame(rbind(conception_01_zero, conception_01))
+
+conception_11 <- as.data.frame(cbind(bb$`1 1`$time, bb$`1 1`$est))
+names(conception_11) <- c('time', 'est_11')
+conception_11$tmp <- 1
+conception_11 <- conception_11 %>% group_by(time) %>% mutate(counter=cumsum(tmp)) %>% filter(counter==2)
+conception_11_zero <- as.numeric(data.frame("0", "0", "0", "0"))
+names(conception_11_zero) <- c("time", "est_11", "tmp", "counter")
+final_conception_11 <- as.data.frame(rbind(conception_11_zero, conception_11))
+
+conception_02 <- as.data.frame(cbind(bb$`0 2`$time, bb$`0 2`$est))
+names(conception_02) <- c('time', 'est_02')
+conception_02$tmp <- 1
+conception_02 <- conception_02 %>% group_by(time) %>% mutate(counter=cumsum(tmp)) %>% filter(counter==2)
+conception_02_zero <- as.numeric(data.frame("0", "0", "0", "0"))
+names(conception_02_zero) <- c("time", "est_02", "tmp", "counter")
+final_conception_02 <- as.data.frame(rbind(conception_02_zero, conception_02))
+
+conception_12 <- as.data.frame(cbind(bb$`1 2`$time, bb$`1 2`$est))
+names(conception_12) <- c('time', 'est_12')
+conception_12$tmp <- 1
+conception_12 <- conception_12 %>% group_by(time) %>% mutate(counter=cumsum(tmp)) %>% filter(counter==2)
+conception_12_zero <- as.numeric(data.frame("0", "0", "0", "0"))
+names(conception_12_zero) <- c("time", "est_12", "tmp", "counter")
+final_conception_12 <- as.data.frame(rbind(conception_12_zero, conception_12))
+
+conception_time <- as.data.frame(seq(0,600))
+names(conception_time) <- c('time')
+
+merged_conception_01 <- left_join(conception_time, final_conception_01, by = "time")
+merged_conception_11 <- left_join(merged_conception_01, final_conception_11, by = "time")
+merged_conception_02 <- left_join(merged_conception_11, final_conception_02, by = "time")
+merged_conception <- left_join(merged_conception_02, final_conception_12, by = "time")
+
+final_conception <- na.locf(merged_conception, na.rm = FALSE)
+final_conception <- mutate(final_conception, diff1 = est_11 - est_01, diff2 = est_12 - est_02)
+
+# ggplot figure 
+ggplot(data = final_conception, aes(x = time)) +
+  geom_line(aes(y = diff1, color = "diff1")) +
+  geom_line(aes(y = diff2, color = "diff2")) +
+  labs(x = "Days of Follow-Up", y = "Risk Difference", color = "Legend", title = "Risk Differences Between Smokers and Non-Smokers") + 
+  scale_color_manual(name = "Outcome", values = c("diff1" = "black", "diff2" = "forestgreen"), labels = c("Livebirth", "Pregnancy Loss")) +
+  theme_classic()
+
+ggplot(data = final_conception, aes(x = time)) +
+  geom_line(aes(y = diff1, color = "diff1")) +
+  geom_smooth(aes(x = time, y = diff1, color = "diff1"), method = "loess") + 
+  geom_line(aes(y = diff2, color = "diff2")) +
+  geom_smooth(aes(x = time, y = diff2, color = "diff2"), method = "loess") + 
+  labs(x = "Days of Follow-Up", y = "Risk Difference", color = "Legend", title = "Risk Differences Between Smokers and Non-Smokers") + 
+  scale_color_manual(name = "Outcome", values = c("diff1" = "black", "diff2" = "forestgreen"), labels = c("Livebirth", "Pregnancy Loss")) +
+  theme_classic()
+
+ggplot(data = final_conception, aes(x = time)) +
+  geom_smooth(aes(x = time, y = diff1, color = "diff1"), method = "loess") + 
+  geom_smooth(aes(x = time, y = diff2, color = "diff2"), method = "loess") + 
+  labs(x = "Days of Follow-Up", y = "Risk Difference", color = "Legend", title = "Risk Differences Between Smokers and Non-Smokers") + 
+  scale_color_manual(name = "Outcome", values = c("diff1" = "black", "diff2" = "forestgreen"), labels = c("Livebirth", "Pregnancy Loss")) +
+  theme_classic()
+
+# full cohort (object = cc)
+full_01 <- as.data.frame(cbind(cc$`0 1`$time, cc$`0 1`$est))
+names(full_01) <- c('time', 'est_01')
+full_01$tmp <- 1
+full_01 <- full_01 %>% group_by(time) %>% mutate(counter=cumsum(tmp)) %>% filter(counter==2)
+full_01_zero <- as.numeric(data.frame("0", "0", "0", "0"))
+names(full_01_zero) <- c("time", "est_01", "tmp", "counter")
+final_full_01 <- as.data.frame(rbind(full_01_zero, full_01))
+
+full_11 <- as.data.frame(cbind(cc$`1 1`$time, cc$`1 1`$est))
+names(full_11) <- c('time', 'est_11')
+full_11$tmp <- 1
+full_11 <- full_11 %>% group_by(time) %>% mutate(counter=cumsum(tmp)) %>% filter(counter==2)
+full_11_zero <- as.numeric(data.frame("0", "0", "0", "0"))
+names(full_11_zero) <- c("time", "est_11", "tmp", "counter")
+final_full_11 <- as.data.frame(rbind(full_11_zero, full_11))
+
+full_02 <- as.data.frame(cbind(cc$`0 2`$time, cc$`0 2`$est))
+names(full_02) <- c('time', 'est_02')
+full_02$tmp <- 1
+full_02 <- full_02 %>% group_by(time) %>% mutate(counter=cumsum(tmp)) %>% filter(counter==2)
+full_02_zero <- as.numeric(data.frame("0", "0", "0", "0"))
+names(full_02_zero) <- c("time", "est_02", "tmp", "counter")
+final_full_02 <- as.data.frame(rbind(full_02_zero, full_02))
+
+full_12 <- as.data.frame(cbind(cc$`1 2`$time, cc$`1 2`$est))
+names(full_12) <- c('time', 'est_12')
+full_12$tmp <- 1
+full_12 <- full_12 %>% group_by(time) %>% mutate(counter=cumsum(tmp)) %>% filter(counter==2)
+full_12_zero <- as.numeric(data.frame("0", "0", "0", "0"))
+names(full_12_zero) <- c("time", "est_12", "tmp", "counter")
+final_full_12 <- as.data.frame(rbind(full_12_zero, full_12))
+
+full_04 <- as.data.frame(cbind(cc$`0 4`$time, cc$`0 4`$est))
+names(full_04) <- c('time', 'est_04')
+full_04$tmp <- 1
+full_04 <- full_04 %>% group_by(time) %>% mutate(counter=cumsum(tmp)) %>% filter(counter==2)
+full_04_zero <- as.numeric(data.frame("0", "0", "0", "0"))
+names(full_04_zero) <- c("time", "est_04", "tmp", "counter")
+final_full_04 <- as.data.frame(rbind(full_04_zero, full_04))
+
+full_14 <- as.data.frame(cbind(cc$`1 4`$time, cc$`1 4`$est))
+names(full_14) <- c('time', 'est_14')
+full_14$tmp <- 1
+full_14 <- full_14 %>% group_by(time) %>% mutate(counter=cumsum(tmp)) %>% filter(counter==2)
+full_14_zero <- as.numeric(data.frame("0", "0", "0", "0"))
+names(full_14_zero) <- c("time", "est_14", "tmp", "counter")
+final_full_14 <- as.data.frame(rbind(full_14_zero, full_14))
+
+full_time <- as.data.frame(seq(0,600))
+names(full_time) <- c('time')
+
+merged_full_01 <- left_join(full_time, final_full_01, by = "time")
+merged_full_11 <- left_join(merged_full_01, final_full_11, by = "time")
+merged_full_02 <- left_join(merged_full_11, final_full_02, by = "time")
+merged_full_12 <- left_join(merged_full_02, final_full_12, by = "time")
+merged_full_04 <- left_join(merged_full_12, final_full_04, by = "time")
+merged_full <- left_join(merged_full_04, final_full_14, by = "time")
+
+final_full <- na.locf(merged_full, na.rm = FALSE)
+final_full <- mutate(final_full, diff1 = est_11 - est_01, diff2 = est_12 - est_02, diff3 = est_14 - est_04)
+
+#ggplot figure
+ggplot(data = final_full, aes(x = time)) +
+  geom_line(aes(y = diff1, color = "diff1")) +
+  geom_line(aes(y = diff2, color = "diff2")) +
+  geom_line(aes(y = diff3, color = "diff3")) +
+  labs(x = "Days of Follow-Up", y = "Risk Difference", color = "Legend", title = "Risk Differences Between Smokers and Non-Smokers") + 
+  scale_color_manual(name = "Outcome", values = c("diff1" = "black", "diff2" = "forestgreen", "diff3" = "darkorange4"), labels = c("Livebirth", "Pregnancy Loss", "Ended Follow-Up")) +
+  theme_classic()
+
+ggplot(data = final_full, aes(x = time)) +
+  geom_line(aes(y = diff1, color = "diff1")) +
+  geom_smooth(aes(x = time, y = diff1, color = "diff1"), method = "loess") + 
+  geom_line(aes(y = diff2, color = "diff2")) +
+  geom_smooth(aes(x = time, y = diff2, color = "diff2"), method = "loess") + 
+  geom_line(aes(y = diff3, color = "diff3")) +
+  geom_smooth(aes(x = time, y = diff3, color = "diff3"), method = "loess") + 
+  labs(x = "Days of Follow-Up", y = "Risk Difference", color = "Legend", title = "Risk Differences Between Smokers and Non-Smokers") + 
+  scale_color_manual(name = "Outcome", values = c("diff1" = "black", "diff2" = "forestgreen", "diff3" = "darkorange4"), labels = c("Livebirth", "Pregnancy Loss", "Ended Follow-Up")) +
+  theme_classic()
+
+ggplot(data = final_full, aes(x = time)) +
+  geom_smooth(aes(x = time, y = diff1, color = "diff1"), method = "loess") + 
+  geom_smooth(aes(x = time, y = diff2, color = "diff2"), method = "loess") + 
+  geom_smooth(aes(x = time, y = diff3, color = "diff3"), method = "loess") + 
+  labs(x = "Days of Follow-Up", y = "Risk Difference", color = "Legend", title = "Risk Differences Between Smokers and Non-Smokers") + 
+  scale_color_manual(name = "Outcome", values = c("diff1" = "black", "diff2" = "forestgreen", "diff3" = "darkorange4 "), labels = c("Livebirth", "Pregnancy Loss", "Ended Follow-Up")) +
+  theme_classic()
+
+```
+
+```{r, propensity scores}
+# use IPW to adjust for confounders - fit regression model, get propensity score for smoking status, take ps for smokers and 1-non-smokers and create weight
+# put ps and 1-ps into column and 1/column
+# stabilized weight is mean of smoking status and weight becomes mean / ps and (1-mean) / (1-ps)
+
+# propensity score livebirth cohort
+# does not run because there is only one level of outcome
+propensityscore_livebirth <- glm(smoke ~  high_school + employed + BMI + married + white, data = livebirth, family = binomial(link = "logit"))$fitted.values
+exposure_livebirth <- livebirth$smoke
+
+plot_data_livebirth <- data.frame(propensityscore_livebirth, Exposure = livebirth$smoke)
+
+p_livebirth <- ggplot(data = plot_data_livebirth) +
+  ylab("Density") +
+  xlab("Propensity Score") +
+  scale_color_manual(values = c("#000000", "#D55E00")) +
+  geom_density(aes(x = "propensity_score_livebirth", group = Exposure, color = Exposure)) 
+
+livebirth$sw <- (mean(exposure_livebirth) / propensityscore_livebirth) * exposure_livebirth + 
+  ((1 - mean(exposure_livebirth))/(1 - propensityscore_livebirth)) * (1 - exposure_livebirth)
+summary(livebirth$sw)
+
+# propensity score conception cohort
+propensityscore_conception <- glm(smoke ~ high_school + employed + BMI + married + white, data = conception, family = binomial(link = "logit"))$fitted.values
+exposure_conception <- conception$smoke
+
+plot_data_conception <- data.frame(propensityscore_conception, Exposure = as.factor(conception$smoke))
+
+ggplot(data = plot_data_conception) +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_x_continuous(expand = c(0,0)) +
+  ylab("Density") +
+  xlab("Propensity Score") +
+  scale_color_manual(values = c("#000000", "#D55E00")) +
+  geom_density(aes(x = propensityscore_conception, group = Exposure, color = Exposure))
+
+conception$sw <- (mean(exposure_conception) / propensityscore_conception) * exposure_conception + 
+  ((1 - mean(exposure_conception))/(1 - propensityscore_conception)) * (1 - exposure_conception)
+
+summary(conception$sw)
+
+# propensity score all outcomes cohort
+mod1 <- vglm(event ~ smoke + married, data = alloutcomes, family = multinomial(refLevel = 4))
+summary(mod1)
+propensityscore_all <- glm(smoke ~  high_school + employed + BMI + married + white,
+                           data = alloutcomes, family = binomial(link = "logit"))
+
+summary(propensityscore_all)
+propensityscore_all <- glm(smoke ~  high_school + employed + BMI + married + white,
+                           data = alloutcomes, family = binomial(link = "logit"))$fitted.values
+exposure_all <- alloutcomes$smoke
+
+plot_data_all <- data.frame(propensityscore_all, Exposure = as.factor(alloutcomes$smoke))
+
+ggplot(data = plot_data_all) +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_x_continuous(expand = c(0,0)) +
+  ylab("Density") +
+  xlab("Propensity Score") +
+  scale_color_manual(values = c("#000000", "#D55E00")) +
+  geom_density(aes(x = propensityscore_all, group = Exposure, color = Exposure)) 
+
+alloutcomes$sw <- (mean(exposure_all) / propensityscore_all)* exposure_all + 
+  (1 - mean(exposure_all)/(1 - propensityscore_all)) * (1 - exposure_all)
+summary(alloutcomes$sw)
+```
+
+```{r, marginal standardization}
+# all conceptions cohort
+conception$event <- as.numeric(conception$event)
+conception$event[conception$event == "1"] <- 0 # livebirth
+conception$event[conception$event == "2"] <- 1 # pregnancy loss
+
+ms_conception <- glm(event ~ smoke + high_school + employed + BMI + married + white, 
+  data = conception, family = binomial(link = "logit"))
+
+mu1 <- predict(ms_conception, newdata = transform(conception, smoke = 1), type = "response")
+mu0 <- predict(ms_conception, newdata = transform(conception, smoke = 0), type = "response")
+
+marg_stand_RD <- mean(mu1) - mean(mu0)
+
+# all outcomes cohort
+alloutcomes$event <- as.numeric(alloutcomes$event)
+alloutcomes$event[alloutcomes$event == "1"] <- 0 # livebirth
+alloutcomes$event[alloutcomes$event == "2"] <- 1 # pregnancy loss
+alloutcomes$event[alloutcomes$event == "3"] <- 2 # ended follow up w/o pregnancy
+alloutcomes$event[alloutcomes$event == "4"] <- 3 # withdrawal
+
+ms_all <- vglm(event ~ smoke + high_school + employed + BMI + married + white, 
+               data = alloutcomes, family = multinomial(refLevel = 4))
+summary(ms_all)
+
+## check the predictions
+pred_test <- predict(ms_all, newdata=alloutcomes, type="response")
+head(pred_test)
+# test 1: number of rows = num obs, number of cols = num outcomes
+# test 2: mean for column X in pred_test should be ~ mean for outcome == X in "alloutcomes" 
+
+
+
+# for outcome = 1 (pregnancy loss)
+mu11 <- (predict(ms_all, newdata = transform(alloutcomes, smoke = 1), type = "response")[,2])
+mu10 <- (predict(ms_all, newdata = transform(alloutcomes, smoke = 0), type = "response")[,2])
+RD_outcome1 <- mean(mu11) - mean(mu10)
+
+# for outcome = 2 (efuwp)
+mu21 <- (predict(ms_all, newdata = transform(alloutcomes, smoke = 1), type = "response")[,3])
+mu20 <- (predict(ms_all, newdata = transform(alloutcomes, smoke = 0), type = "response")[,3])
+RD_outcome2 <- mean(mu21) - mean(mu20)
+
+# for outcome = 1 (live birth)
+mu31 <- (predict(ms_all, newdata = transform(alloutcomes, smoke = 1), type = "response")[,1])
+mu30 <- (predict(ms_all, newdata = transform(alloutcomes, smoke = 0), type = "response")[,1])
+RD_outcome3 <- mean(mu31) - mean(mu30)
+```
+
+
+
+
