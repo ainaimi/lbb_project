@@ -17,10 +17,9 @@ library(survival)
 library(survminer)
 library(ggplot2)
 library(zoo)
+library(here)
 
-setwd("C:/Users/sthorn2/OneDrive - Emory University/PhD Program/projects/Live Birth Bias/code")
-
-eager_base_imputed <- read_csv("eager_base_imputed.csv")
+eager_base_imputed <- read_csv(here("data","eager_base_imputed.csv"))
 as.data.frame(eager_base_imputed)
 ```
 
